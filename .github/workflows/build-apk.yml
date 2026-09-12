@@ -1,7 +1,13 @@
-name: Build Fulus APK
+name: Build Fulus Release APK
 
 on:
   workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: "Optional API override (leave empty to use repository variable)"
+        required: false
+        type: string
+        default: ""
 
 env:
   FLUTTER_VERSION: "3.44.9"
@@ -10,8 +16,8 @@ permissions:
   contents: read
 
 jobs:
-  build-debug-apk:
-    name: Build debug APK
+  build-release-apk:
+    name: Build signed release APK
     runs-on: ubuntu-latest
 
     steps:
@@ -44,34 +50,84 @@ jobs:
         run: |
           mkdir -p /tmp/gradle-wrapper-bootstrap
           cd /tmp/gradle-wrapper-bootstrap
-
           touch settings.gradle
-
           gradle wrapper --distribution-type all
-
-          cp -v gradlew gradlew.bat \
-            "$GITHUB_WORKSPACE/android/"
-
-          cp -v gradle/wrapper/gradle-wrapper.jar \
-            "$GITHUB_WORKSPACE/android/gradle/wrapper/"
-
+          cp -v gradlew gradlew.bat "$GITHUB_WORKSPACE/android/"
+          mkdir -p "$GITHUB_WORKSPACE/android/gradle/wrapper"
+          cp -v gradle/wrapper/gradle-wrapper.jar "$GITHUB_WORKSPACE/android/gradle/wrapper/"
           chmod +x "$GITHUB_WORKSPACE/android/gradlew"
 
       - name: Flutter pub get
         run: flutter pub get
 
       - name: Generate code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Validate release configuration
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url || vars.API_BASE_URL }}
+          APPLICATION_ID: ${{ vars.FULUS_APPLICATION_ID }}
         run: |
-          dart run build_runner build \
-            --delete-conflicting-outputs
+          test -n "$API_BASE_URL"
+          test "$APPLICATION_ID" = "com.fulus.app"
 
-      - name: Build debug APK
-        run: flutter build apk --debug
+          case "$API_BASE_URL" in
+            https://*) ;;
+            *)
+              echo "API_BASE_URL must use HTTPS"
+              exit 1
+              ;;
+          esac
 
-      - name: Upload debug APK
+          case "$API_BASE_URL" in
+            *".example"*)
+              echo "Placeholder API_BASE_URL is not allowed"
+              exit 1
+              ;;
+          esac
+
+      - name: Decode release keystore
+        env:
+          KEYSTORE_B64: ${{ secrets.FULUS_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          test -n "$KEYSTORE_B64"
+          echo "$KEYSTORE_B64" | base64 --decode > android/app/fulus-release.jks
+          test -s android/app/fulus-release.jks
+
+      - name: Configure release signing
+        env:
+          STORE_PASSWORD: ${{ secrets.FULUS_ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.FULUS_ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.FULUS_ANDROID_KEY_PASSWORD }}
+        run: |
+          test -n "$STORE_PASSWORD"
+          test -n "$KEY_ALIAS"
+          test -n "$KEY_PASSWORD"
+
+          cat > android/key.properties <<EOF2
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=fulus-release.jks
+          EOF2
+
+      - name: Build release APK
+        env:
+          API_BASE_URL: ${{ inputs.api_base_url || vars.API_BASE_URL }}
+        run: |
+          flutter build apk \
+            --release \
+            --dart-define=API_BASE_URL="$API_BASE_URL"
+
+      - name: Verify release artifact
+        run: |
+          test -s build/app/outputs/flutter-apk/app-release.apk
+          ls -lh build/app/outputs/flutter-apk/app-release.apk
+
+      - name: Upload release APK
         uses: actions/upload-artifact@v4
         with:
-          name: fulus-debug-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          name: fulus-release-apk
+          path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 7
