@@ -24,7 +24,7 @@ jobs:
       - name: Checkout Fulus Mobile
         uses: actions/checkout@v4
         with:
-          repository: SanniMuhammed/Fulus-mobile
+          repository: FulusBuild/Fulus-mobile
           ref: main
           token: ${{ secrets.FULUS_SOURCE_TOKEN }}
 
